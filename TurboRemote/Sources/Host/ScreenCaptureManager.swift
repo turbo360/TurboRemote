@@ -13,7 +13,8 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     private var stream: SCStream?
     private var streamOutput: StreamOutputHandler?
 
-    var onFrame: ((CMSampleBuffer) -> Void)?
+    /// Set from HostManager — called on background queue, NOT on MainActor
+    nonisolated(unsafe) var onFrame: ((CMSampleBuffer) -> Void)?
     var onColourSpaceDetected: ((ColourSpaceInfo) -> Void)?
 
     func refreshDisplays() async {
@@ -62,8 +63,10 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
             // Capture in display's native colour space
             config.colorSpaceName = CGColorSpace.displayP3 as CFString
 
-            let handler = StreamOutputHandler { [weak self] sampleBuffer in
-                self?.onFrame?(sampleBuffer)
+            // Capture the onFrame closure directly to avoid MainActor hop
+            let frameCallback = self.onFrame
+            let handler = StreamOutputHandler { sampleBuffer in
+                frameCallback?(sampleBuffer)
             }
             streamOutput = handler
 

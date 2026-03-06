@@ -20,6 +20,12 @@ struct HostView: View {
                     .foregroundColor(.red)
                     .font(.caption)
                     .padding(.horizontal)
+
+                Button("Retry Capture") {
+                    Task { await hostManager.retryCapture() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
             Divider()
@@ -286,6 +292,16 @@ final class HostManager: ObservableObject {
         framesSkipped = 0
         _bytesSent.pointee = 0
         startBandwidthMonitor()
+    }
+
+    func retryCapture() async {
+        errorMessage = nil
+        encoderReady = false
+        await captureManager.stopCapture()
+        await captureManager.startCapture()
+        if let captureErr = captureManager.captureError {
+            errorMessage = "Screen capture failed: \(captureErr)\nGrant Screen Recording permission in System Settings > Privacy & Security"
+        }
     }
 
     func stopStreaming() async {
