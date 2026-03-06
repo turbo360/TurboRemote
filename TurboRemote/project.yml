@@ -27,7 +27,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: TurboRemote.entitlements
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: "NO"
-        ENABLE_HARDENED_RUNTIME: "NO"
+        ENABLE_HARDENED_RUNTIME: "YES"
         SWIFT_STRICT_CONCURRENCY: minimal
     entitlements:
       path: TurboRemote.entitlements
