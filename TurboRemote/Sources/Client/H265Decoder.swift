@@ -117,12 +117,25 @@ final class H265Decoder: @unchecked Sendable {
     }
 
     private func createFormatDescription(from parameterSets: [Data]) {
-        let pointers = parameterSets.map { data -> UnsafePointer<UInt8> in
-            data.withUnsafeBytes { $0.baseAddress!.assumingMemoryBound(to: UInt8.self) }
-        }
-        let sizes = parameterSets.map { $0.count }
+        guard !parameterSets.isEmpty else { return }
 
-        // We need to keep the data alive during the call
+        // Allocate stable buffers — withUnsafeBytes pointers are only valid inside the closure
+        var buffers = [UnsafeMutablePointer<UInt8>]()
+        var sizes = [Int]()
+
+        for ps in parameterSets {
+            let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: ps.count)
+            ps.copyBytes(to: buf, count: ps.count)
+            buffers.append(buf)
+            sizes.append(ps.count)
+        }
+
+        defer {
+            for buf in buffers { buf.deallocate() }
+        }
+
+        let pointers = buffers.map { UnsafePointer($0) }
+
         var formatDesc: CMVideoFormatDescription?
         let status = pointers.withUnsafeBufferPointer { pointersBuffer in
             sizes.withUnsafeBufferPointer { sizesBuffer in
@@ -139,13 +152,7 @@ final class H265Decoder: @unchecked Sendable {
         }
 
         if status == noErr, let desc = formatDesc {
-            // Check if format description changed
-            if let existing = formatDescription, CMVideoFormatDescriptionMatchesImageBuffer(existing, imageBuffer: desc as! CVImageBuffer) == false {
-                // Format changed — recreate session
-                teardownSession()
-            }
             formatDescription = desc
-            // Recreate session with new format
             teardownSession()
             print("[Decoder] Format description created from \(parameterSets.count) parameter sets")
         } else {
