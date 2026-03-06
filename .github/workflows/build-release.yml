@@ -1,0 +1,69 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Create Secrets.swift
+        run: |
+          cat > TurboRemote/Sources/App/Secrets.swift << 'SWIFT'
+          enum Secrets {
+              static let appPin = "${{ secrets.APP_PIN }}"
+          }
+          SWIFT
+
+      - name: Generate Xcode Project
+        working-directory: TurboRemote
+        run: |
+          xcodegen generate
+          # Restore entitlements (XcodeGen overwrites them)
+          cat > TurboRemote.entitlements << 'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.app-sandbox</key>
+            <false/>
+          </dict>
+          </plist>
+          XML
+
+      - name: Build
+        working-directory: TurboRemote
+        run: |
+          xcodebuild -project TurboRemote.xcodeproj \
+            -scheme TurboRemote \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package DMG
+        working-directory: TurboRemote
+        run: |
+          APP_PATH="build/Build/Products/Release/TurboRemote.app"
+          DMG_NAME="TurboRemote-${GITHUB_REF_NAME}.dmg"
+          mkdir -p dmg_staging
+          cp -R "$APP_PATH" dmg_staging/
+          ln -s /Applications dmg_staging/Applications
+          hdiutil create -volname "TurboRemote" -srcfolder dmg_staging -ov -format UDZO "$DMG_NAME"
+          echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: TurboRemote/${{ env.DMG_NAME }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
