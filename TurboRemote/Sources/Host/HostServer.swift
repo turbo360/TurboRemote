@@ -120,10 +120,19 @@ final class HostServer: @unchecked Sendable {
     private func processMessages() {
         while receiveBuffer.count >= 4 {
             let msgSize = Int(receiveBuffer.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-            guard receiveBuffer.count >= 4 + msgSize else { return }
 
-            let msgData = receiveBuffer.subdata(in: 4..<4+msgSize)
-            receiveBuffer.removeFirst(4 + msgSize)
+            // Sanity check: reject obviously corrupt frames
+            guard msgSize > 0, msgSize <= 1_000_000 else {
+                print("[HostServer] Invalid frame size \(msgSize), resetting buffer")
+                receiveBuffer.removeAll()
+                return
+            }
+
+            let totalNeeded = 4 + msgSize
+            guard receiveBuffer.count >= totalNeeded else { return }
+
+            let msgData = Data(receiveBuffer[receiveBuffer.startIndex + 4 ..< receiveBuffer.startIndex + totalNeeded])
+            receiveBuffer.removeFirst(totalNeeded)
 
             if !authenticated {
                 if let authHash = ControlMessage.parseAuth(from: msgData) {

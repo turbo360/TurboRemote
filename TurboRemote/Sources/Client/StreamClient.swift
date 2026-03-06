@@ -155,10 +155,18 @@ final class StreamClient: @unchecked Sendable {
     private func processBuffer() {
         while receiveBuffer.count >= 4 {
             let packetSize = Int(receiveBuffer.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-            guard receiveBuffer.count >= 4 + packetSize else { return }
 
-            let packetData = receiveBuffer.subdata(in: 4..<4+packetSize)
-            receiveBuffer.removeFirst(4 + packetSize)
+            guard packetSize > 0, packetSize <= 10_000_000 else {
+                print("[Client] Invalid frame size \(packetSize), resetting buffer")
+                receiveBuffer.removeAll()
+                return
+            }
+
+            let totalNeeded = 4 + packetSize
+            guard receiveBuffer.count >= totalNeeded else { return }
+
+            let packetData = Data(receiveBuffer[receiveBuffer.startIndex + 4 ..< receiveBuffer.startIndex + totalNeeded])
+            receiveBuffer.removeFirst(totalNeeded)
 
             if !authenticated {
                 if let result = ControlMessage.parseAuthResult(from: packetData) {
