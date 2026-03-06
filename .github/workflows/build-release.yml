@@ -81,6 +81,20 @@ jobs:
           hdiutil create -volname "TurboRemote" -srcfolder dmg_staging -ov -format UDZO "$DMG_NAME"
           echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
 
+      - name: Notarize DMG
+        working-directory: TurboRemote
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "$DMG_NAME" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 10m
+          xcrun stapler staple "$DMG_NAME"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
