@@ -14,6 +14,8 @@ final class HostServer: @unchecked Sendable {
     var onClientDisconnected: (() -> Void)?
     var onError: ((String) -> Void)?
     var onModeChange: ((ConnectionMode) -> Void)?
+    var onInputEvent: ((InputEvent) -> Void)?
+    var onDisplaySelect: ((UInt32) -> Void)?
 
     init(port: UInt16 = 7420) {
         self.port = port
@@ -153,6 +155,11 @@ final class HostServer: @unchecked Sendable {
             if let mode = ControlMessage.parseModeChange(from: msgData) {
                 print("[HostServer] Mode change: \(mode.label)")
                 onModeChange?(mode)
+            } else if let event = ControlMessage.parseInputEvent(from: msgData) {
+                onInputEvent?(event)
+            } else if let displayId = ControlMessage.parseDisplaySelect(from: msgData) {
+                print("[HostServer] Display select: \(displayId)")
+                onDisplaySelect?(displayId)
             }
         }
     }

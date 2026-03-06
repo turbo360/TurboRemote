@@ -200,6 +200,7 @@ final class HostManager: ObservableObject {
     private let server: HostServer
     private let deltaAnalyzer = FrameDeltaAnalyzer()
     private var profileSelector = ProfileSelector()
+    private let inputInjector = InputInjector()
 
     private let _bytesSent = UnsafeMutablePointer<Int>.allocate(capacity: 1)
     private var bandwidthTimer: Timer?
@@ -209,8 +210,15 @@ final class HostManager: ObservableObject {
         server = HostServer()
         _bytesSent.initialize(to: 0)
 
+        // Check Accessibility permission for remote input
+        _ = InputInjector.checkAccessibilityPermission()
+
         server.onClientConnected = { [weak self] in
-            Task { @MainActor in self?.clientConnected = true }
+            Task { @MainActor in
+                self?.clientConnected = true
+                // Send display list to client
+                self?.sendDisplayList()
+            }
         }
         server.onClientDisconnected = { [weak self] in
             Task { @MainActor in self?.clientConnected = false }
@@ -222,6 +230,27 @@ final class HostManager: ObservableObject {
             Task { @MainActor in
                 self?.profileSelector.connectionMode = mode
                 self?.clientModeLabel = mode.label
+            }
+        }
+
+        // Input injection from remote client
+        server.onInputEvent = { [weak self] event in
+            self?.inputInjector.inject(event)
+        }
+
+        // Display selection from client
+        server.onDisplaySelect = { [weak self] displayId in
+            Task { @MainActor in
+                guard let self = self else { return }
+                // Find the display index matching this ID
+                if let idx = self.captureManager.availableDisplays.firstIndex(where: { UInt32($0.displayID) == displayId }) {
+                    self.encoderReady = false
+                    await self.captureManager.stopCapture()
+                    await self.captureManager.startCapture(displayIndex: idx)
+                    // Update input injector with new display dimensions
+                    let d = self.captureManager.availableDisplays[idx]
+                    self.inputInjector.updateScreenSize(width: d.width, height: d.height)
+                }
             }
         }
 
@@ -288,10 +317,23 @@ final class HostManager: ObservableObject {
         if let captureErr = captureManager.captureError {
             errorMessage = "Screen capture failed: \(captureErr)\nGrant Screen Recording permission in System Settings > Privacy & Security"
         }
+        // Set input injector screen size from the captured display
+        if let display = captureManager.availableDisplays.first {
+            inputInjector.updateScreenSize(width: display.width, height: display.height)
+        }
         isStreaming = true
         framesSkipped = 0
         _bytesSent.pointee = 0
         startBandwidthMonitor()
+    }
+
+    private func sendDisplayList() {
+        let displays = captureManager.availableDisplays.map { d in
+            (id: UInt32(d.displayID), name: "Display \(d.displayID)", width: d.width, height: d.height)
+        }
+        guard !displays.isEmpty else { return }
+        let data = ControlMessage.displayListData(displays)
+        server.send(data)
     }
 
     func retryCapture() async {

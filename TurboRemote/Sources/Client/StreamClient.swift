@@ -20,6 +20,7 @@ final class StreamClient: @unchecked Sendable {
     var onDisconnected: ((String?) -> Void)?
     var onAuthResult: ((Bool) -> Void)?
     var onReconnecting: ((Int) -> Void)?
+    var onDisplayList: (([(id: UInt32, name: String, width: Int, height: Int)]) -> Void)?
 
     func connect(host: String, port: UInt16 = 7420) {
         lastHost = host
@@ -123,6 +124,26 @@ final class StreamClient: @unchecked Sendable {
         })
     }
 
+    // MARK: - Input Events
+
+    func sendInputEvent(_ event: InputEvent) {
+        guard authenticated, let connection = connection else { return }
+        let data = ControlMessage.inputEventData(event)
+        connection.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    // MARK: - Display Selection
+
+    func sendDisplaySelect(_ displayId: UInt32) {
+        guard authenticated, let connection = connection else { return }
+        let data = ControlMessage.displaySelectData(displayId)
+        connection.send(content: data, completion: .contentProcessed { error in
+            if let error = error {
+                print("[Client] Send display select error: \(error)")
+            }
+        })
+    }
+
     // MARK: - Receive
 
     private func startReceiving() {
@@ -180,6 +201,12 @@ final class StreamClient: @unchecked Sendable {
                         connection?.cancel()
                     }
                 }
+                continue
+            }
+
+            // Check for control messages (display list from host)
+            if let displays = ControlMessage.parseDisplayList(from: packetData) {
+                onDisplayList?(displays)
                 continue
             }
 

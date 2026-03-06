@@ -130,6 +130,11 @@ struct ClientView: View {
 
                     HStack(spacing: 12) {
                         modePicker
+
+                        if clientManager.remoteDisplays.count > 1 {
+                            displayPicker
+                        }
+
                         Spacer()
                         Button("Disconnect") { clientManager.disconnect() }
                             .buttonStyle(.bordered)
@@ -204,6 +209,36 @@ struct ClientView: View {
         .cornerRadius(6)
     }
 
+    private var displayPicker: some View {
+        Menu {
+            ForEach(clientManager.remoteDisplays, id: \.id) { display in
+                Button {
+                    clientManager.selectDisplay(display.id)
+                } label: {
+                    HStack {
+                        if display.id == clientManager.selectedDisplayId {
+                            Image(systemName: "checkmark")
+                        }
+                        Text("\(display.name) (\(display.width)x\(display.height))")
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "display.2")
+                    .font(.system(size: 10))
+                Text("Display")
+                    .font(.system(size: 8, weight: .medium))
+            }
+            .frame(height: 32)
+            .padding(.horizontal, 8)
+            .foregroundColor(.white)
+            .background(.black.opacity(0.3))
+            .cornerRadius(6)
+        }
+        .menuStyle(.borderlessButton)
+    }
+
     private func connect() {
         guard !hostAddress.isEmpty else { return }
         if let endpoint = clientManager.selectedEndpoint {
@@ -227,10 +262,12 @@ final class ClientManager: ObservableObject {
     @Published var connectionMode: ConnectionMode = .studio
     @Published var currentQuality: QualityLevel = .lossless
     @Published var deltaPercent: UInt8 = 0
-    @Published var mtkView = MTKView()
+    @Published var mtkView = InputCaptureMTKView()
     @Published var discoveredHosts = [BonjourBrowser.DiscoveredHost]()
     @Published var selectedEndpoint: NWEndpoint?
     @Published var colourTransformString = "—"
+    @Published var remoteDisplays = [(id: UInt32, name: String, width: Int, height: Int)]()
+    @Published var selectedDisplayId: UInt32?
 
     private(set) var renderer: MetalRenderer?
     private let client = StreamClient()
@@ -241,6 +278,11 @@ final class ClientManager: ObservableObject {
         renderer = MetalRenderer(mtkView: mtkView)
         if let r = renderer {
             colourTransformString = r.colourManager.transformDescription
+        }
+
+        // Input events: capture from MTKView → send to host
+        mtkView.onInputEvent = { [weak self] event in
+            self?.client.sendInputEvent(event)
         }
 
         decoder.onDecodedFrame = { [weak self] pixelBuffer in
@@ -297,11 +339,25 @@ final class ClientManager: ObservableObject {
             }
         }
 
+        client.onDisplayList = { [weak self] displays in
+            Task { @MainActor in
+                self?.remoteDisplays = displays
+                if self?.selectedDisplayId == nil, let first = displays.first {
+                    self?.selectedDisplayId = first.id
+                }
+            }
+        }
+
         browser.onHostsUpdated = { [weak self] hosts in
             Task { @MainActor in
                 self?.discoveredHosts = hosts
             }
         }
+    }
+
+    func selectDisplay(_ displayId: UInt32) {
+        selectedDisplayId = displayId
+        client.sendDisplaySelect(displayId)
     }
 
     func startDiscovery() {

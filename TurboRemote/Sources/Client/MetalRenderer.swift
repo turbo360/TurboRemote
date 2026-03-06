@@ -19,7 +19,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     let colourManager = ColourPipelineManager()
     private var useColourTransform = false
 
-    init?(mtkView: MTKView) {
+    init?(mtkView: InputCaptureMTKView) {
         guard let device = MTLCreateSystemDefaultDevice() else {
             print("[Renderer] No Metal device")
             return nil
@@ -159,11 +159,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
 
 struct MetalStreamView: NSViewRepresentable {
     let renderer: MetalRenderer?
-    @Binding var mtkView: MTKView
+    @Binding var mtkView: InputCaptureMTKView
 
-    func makeNSView(context: Context) -> MTKView {
+    func makeNSView(context: Context) -> InputCaptureMTKView {
         return mtkView
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) {}
+    func updateNSView(_ nsView: InputCaptureMTKView, context: Context) {}
 }

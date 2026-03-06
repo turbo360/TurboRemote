@@ -90,9 +90,12 @@ struct ControlMessage {
     static let magic: UInt32 = 0x5452434D // "TRCM"
 
     enum MessageType: UInt8 {
-        case modeChange = 1
-        case auth       = 2
-        case authResult = 3
+        case modeChange  = 1
+        case auth        = 2
+        case authResult  = 3
+        case inputEvent  = 4
+        case displayList = 5
+        case displaySelect = 6
     }
 
     // MARK: - Mode Change
@@ -124,6 +127,67 @@ struct ControlMessage {
     static func parseAuthResult(from data: Data) -> Bool? {
         guard let (type, payload) = parseMessage(data), type == .authResult, payload.count >= 1 else { return nil }
         return payload[0] == 1
+    }
+
+    // MARK: - Input Events (client -> host)
+
+    static func inputEventData(_ event: InputEvent) -> Data {
+        return buildMessage(type: .inputEvent, payload: event.serialize())
+    }
+
+    static func parseInputEvent(from data: Data) -> InputEvent? {
+        guard let (type, payload) = parseMessage(data), type == .inputEvent else { return nil }
+        return InputEvent.deserialize(from: payload)
+    }
+
+    // MARK: - Display List (host -> client)
+
+    static func displayListData(_ displays: [(id: UInt32, name: String, width: Int, height: Int)]) -> Data {
+        var payload = Data()
+        payload.append(UInt8(displays.count))
+        for d in displays {
+            var did = d.id.bigEndian
+            payload.append(Data(bytes: &did, count: 4))
+            var w = UInt16(d.width).bigEndian
+            payload.append(Data(bytes: &w, count: 2))
+            var h = UInt16(d.height).bigEndian
+            payload.append(Data(bytes: &h, count: 2))
+            let nameData = d.name.data(using: .utf8) ?? Data()
+            payload.append(UInt8(nameData.count))
+            payload.append(nameData)
+        }
+        return buildMessage(type: .displayList, payload: payload)
+    }
+
+    static func parseDisplayList(from data: Data) -> [(id: UInt32, name: String, width: Int, height: Int)]? {
+        guard let (type, payload) = parseMessage(data), type == .displayList, !payload.isEmpty else { return nil }
+        var offset = 0
+        let count = Int(payload[offset]); offset += 1
+        var displays = [(id: UInt32, name: String, width: Int, height: Int)]()
+        for _ in 0..<count {
+            guard offset + 8 <= payload.count else { return nil }
+            let did = payload.subdata(in: offset..<offset+4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }; offset += 4
+            let w = Int(payload.subdata(in: offset..<offset+2).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }); offset += 2
+            let h = Int(payload.subdata(in: offset..<offset+2).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }); offset += 2
+            guard offset < payload.count else { return nil }
+            let nameLen = Int(payload[offset]); offset += 1
+            guard offset + nameLen <= payload.count else { return nil }
+            let name = String(data: payload.subdata(in: offset..<offset+nameLen), encoding: .utf8) ?? "Display"; offset += nameLen
+            displays.append((id: did, name: name, width: w, height: h))
+        }
+        return displays
+    }
+
+    // MARK: - Display Select (client -> host)
+
+    static func displaySelectData(_ displayId: UInt32) -> Data {
+        var did = displayId.bigEndian
+        return buildMessage(type: .displaySelect, payload: Data(bytes: &did, count: 4))
+    }
+
+    static func parseDisplaySelect(from data: Data) -> UInt32? {
+        guard let (type, payload) = parseMessage(data), type == .displaySelect, payload.count >= 4 else { return nil }
+        return payload.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
     }
 
     // MARK: - Helpers
