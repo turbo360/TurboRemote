@@ -1,6 +1,5 @@
 import Foundation
 import Network
-import Security
 
 final class HostServer: @unchecked Sendable {
     private let port: UInt16
@@ -9,37 +8,33 @@ final class HostServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.turboremote.host-server", qos: .userInteractive)
     private var receiveBuffer = Data()
     private var authenticated = false
-    private let passphrase: String
+    private let pinHash: Data
 
     var onClientConnected: (() -> Void)?
     var onClientDisconnected: (() -> Void)?
     var onError: ((String) -> Void)?
     var onModeChange: ((ConnectionMode) -> Void)?
 
-    init(port: UInt16 = 7420, passphrase: String) {
+    init(port: UInt16 = 7420) {
         self.port = port
-        self.passphrase = passphrase
+        self.pinHash = PassphraseManager.hash(Secrets.appPin)
     }
 
     func start() {
-        // Try QUIC first, fall back to TLS+TCP
-        if let quicListener = createQUICListener() {
-            listener = quicListener
-            print("[HostServer] Using QUIC transport")
-        } else if let tlsListener = createTLSListener() {
-            listener = tlsListener
-            print("[HostServer] Using TLS+TCP transport (QUIC unavailable)")
-        } else {
-            // Final fallback: plain TCP
-            do {
-                let params = NWParameters.tcp
-                params.allowLocalEndpointReuse = true
-                listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-                print("[HostServer] Using plain TCP transport (TLS unavailable)")
-            } catch {
-                onError?("Failed to create listener: \(error)")
-                return
-            }
+        do {
+            let tcpOptions = NWProtocolTCP.Options()
+            tcpOptions.noDelay = true
+            tcpOptions.enableKeepalive = true
+            tcpOptions.keepaliveInterval = 5
+            tcpOptions.keepaliveIdle = 10
+
+            let params = NWParameters(tls: nil, tcp: tcpOptions)
+            params.allowLocalEndpointReuse = true
+
+            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        } catch {
+            onError?("Failed to create listener: \(error)")
+            return
         }
 
         guard let listener = listener else { return }
@@ -70,48 +65,6 @@ final class HostServer: @unchecked Sendable {
         }
 
         listener.start(queue: queue)
-    }
-
-    // MARK: - QUIC Setup
-
-    private func createQUICListener() -> NWListener? {
-        guard let identity = TLSIdentityManager.getOrCreateIdentity() else {
-            print("[HostServer] No TLS identity for QUIC")
-            return nil
-        }
-
-        let quicOptions = NWProtocolQUIC.Options(alpn: ["turboremote"])
-        let secOptions = quicOptions.securityProtocolOptions
-
-        let secIdentity = sec_identity_create(identity)!
-        sec_protocol_options_set_local_identity(secOptions, secIdentity)
-        sec_protocol_options_set_peer_authentication_required(secOptions, false)
-
-        let params = NWParameters(quic: quicOptions)
-        params.allowLocalEndpointReuse = true
-
-        return try? NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-    }
-
-    // MARK: - TLS+TCP Fallback
-
-    private func createTLSListener() -> NWListener? {
-        guard let identity = TLSIdentityManager.getOrCreateIdentity() else {
-            return nil
-        }
-
-        let tlsOptions = NWProtocolTLS.Options()
-        let secIdentity = sec_identity_create(identity)!
-        sec_protocol_options_set_local_identity(tlsOptions.securityProtocolOptions, secIdentity)
-        sec_protocol_options_set_peer_authentication_required(tlsOptions.securityProtocolOptions, false)
-
-        let tcpOptions = NWProtocolTCP.Options()
-        tcpOptions.noDelay = true
-
-        let params = NWParameters(tls: tlsOptions, tcp: tcpOptions)
-        params.allowLocalEndpointReuse = true
-
-        return try? NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
     }
 
     // MARK: - Connection Handling
@@ -172,11 +125,9 @@ final class HostServer: @unchecked Sendable {
             let msgData = receiveBuffer.subdata(in: 4..<4+msgSize)
             receiveBuffer.removeFirst(4 + msgSize)
 
-            // Check for auth message first
             if !authenticated {
-                if let authMsg = ControlMessage.parseAuth(from: msgData) {
-                    let expected = PassphraseManager.hash(passphrase)
-                    if authMsg == expected {
+                if let authHash = ControlMessage.parseAuth(from: msgData) {
+                    if authHash == pinHash {
                         authenticated = true
                         print("[HostServer] Client authenticated")
                         sendAuthResult(true)
@@ -190,7 +141,6 @@ final class HostServer: @unchecked Sendable {
                 continue
             }
 
-            // Process control messages from authenticated client
             if let mode = ControlMessage.parseModeChange(from: msgData) {
                 print("[HostServer] Mode change: \(mode.label)")
                 onModeChange?(mode)

@@ -28,25 +28,18 @@ struct HostView: View {
 
             Spacer()
 
-            Button(hostManager.isStreaming ? "Stop Sharing" : "Start Sharing") {
-                Task {
-                    if hostManager.isStreaming {
-                        await hostManager.stopStreaming()
-                    } else {
-                        await hostManager.startStreaming()
-                    }
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(hostManager.isStreaming ? .red : .blue)
-            .controlSize(.large)
-
             Text("Port: 7420")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
         .padding(24)
-        .frame(width: 380, height: 520)
+        .frame(width: 380, height: 480)
+        .task {
+            // Auto-start streaming when host view appears
+            if !hostManager.isStreaming {
+                await hostManager.startStreaming()
+            }
+        }
     }
 
     @ViewBuilder
@@ -75,15 +68,13 @@ struct HostView: View {
         } else if hostManager.isStreaming {
             return "Waiting for client..."
         }
-        return "Idle"
+        return "Starting..."
     }
 
     @ViewBuilder
     private var statsView: some View {
         if hostManager.isStreaming {
             VStack(alignment: .leading, spacing: 5) {
-                statRow("Passphrase", hostManager.passphrase)
-                Divider()
                 statRow("Resolution", hostManager.resolutionString)
                 statRow("Colour space", hostManager.colourSpaceString)
                 statRow("Quality", hostManager.currentQualityLabel)
@@ -198,8 +189,6 @@ final class HostManager: ObservableObject {
     @Published var clientModeLabel = "Studio"
     @Published var colourSpaceString = "—"
 
-    let passphrase: String
-
     private let captureManager = ScreenCaptureManager()
     private let encoder = H265Encoder()
     private let server: HostServer
@@ -211,8 +200,7 @@ final class HostManager: ObservableObject {
     private var encoderReady = false
 
     init() {
-        passphrase = PassphraseManager.getOrCreatePassphrase()
-        server = HostServer(passphrase: passphrase)
+        server = HostServer()
         _bytesSent.initialize(to: 0)
 
         server.onClientConnected = { [weak self] in

@@ -5,7 +5,6 @@ import Network
 struct ClientView: View {
     @StateObject private var clientManager = ClientManager()
     @State private var hostAddress = ""
-    @State private var passphrase = ""
 
     var body: some View {
         Group {
@@ -35,6 +34,7 @@ struct ClientView: View {
                 TextField("192.168.1.x or hostname", text: $hostAddress)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 250)
+                    .onSubmit { connect() }
             }
 
             // Bonjour discovered hosts
@@ -64,16 +64,6 @@ struct ClientView: View {
                 .frame(width: 250, alignment: .leading)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Passphrase")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                TextField("word-word-word-word", text: $passphrase)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-                    .onSubmit { connect() }
-            }
-
             if clientManager.isConnecting {
                 HStack {
                     ProgressView()
@@ -93,10 +83,10 @@ struct ClientView: View {
             Button("Connect") { connect() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(passphrase.isEmpty || clientManager.isConnecting)
+                .disabled(hostAddress.isEmpty || clientManager.isConnecting)
         }
         .padding(30)
-        .frame(width: 350, height: 500)
+        .frame(width: 350, height: 450)
         .onAppear { clientManager.startDiscovery() }
         .onDisappear { clientManager.stopDiscovery() }
     }
@@ -215,11 +205,11 @@ struct ClientView: View {
     }
 
     private func connect() {
-        guard !passphrase.isEmpty else { return }
+        guard !hostAddress.isEmpty else { return }
         if let endpoint = clientManager.selectedEndpoint {
-            clientManager.connect(endpoint: endpoint, passphrase: passphrase)
-        } else if !hostAddress.isEmpty {
-            clientManager.connect(to: hostAddress, passphrase: passphrase)
+            clientManager.connect(endpoint: endpoint)
+        } else {
+            clientManager.connect(to: hostAddress)
         }
     }
 }
@@ -276,7 +266,7 @@ final class ClientManager: ObservableObject {
         client.onAuthResult = { [weak self] success in
             Task { @MainActor in
                 if !success {
-                    self?.errorMessage = "Authentication failed — check passphrase"
+                    self?.errorMessage = "Authentication failed — wrong PIN"
                     self?.isConnecting = false
                 }
             }
@@ -322,18 +312,18 @@ final class ClientManager: ObservableObject {
         browser.stopBrowsing()
     }
 
-    func connect(to host: String, passphrase: String) {
+    func connect(to host: String) {
         isConnecting = true
         connectionStatus = "Connecting..."
         errorMessage = nil
-        client.connect(host: host, passphrase: passphrase)
+        client.connect(host: host)
     }
 
-    func connect(endpoint: NWEndpoint, passphrase: String) {
+    func connect(endpoint: NWEndpoint) {
         isConnecting = true
         connectionStatus = "Connecting..."
         errorMessage = nil
-        client.connect(endpoint: endpoint, passphrase: passphrase)
+        client.connect(endpoint: endpoint)
     }
 
     func setMode(_ mode: ConnectionMode) {

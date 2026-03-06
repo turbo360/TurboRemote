@@ -206,14 +206,9 @@ struct HostSettingsView: View {
 
             Section("System") {
                 Toggle("Start on login", isOn: $autoStart)
-
-                HStack {
-                    Text("Passphrase")
-                    Spacer()
-                    Text(PassphraseManager.getOrCreatePassphrase())
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                }
+                    .onChange(of: autoStart) { _, enabled in
+                        LaunchAgentManager.setEnabled(enabled)
+                    }
             }
         }
         .padding()

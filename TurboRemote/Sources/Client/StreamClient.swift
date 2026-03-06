@@ -10,7 +10,7 @@ final class StreamClient: @unchecked Sendable {
     // Reconnection
     private var lastHost: String?
     private var lastPort: UInt16 = 7420
-    private var lastPassphrase: String?
+    private var lastEndpoint: NWEndpoint?
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 10
     private var shouldReconnect = false
@@ -21,32 +21,44 @@ final class StreamClient: @unchecked Sendable {
     var onAuthResult: ((Bool) -> Void)?
     var onReconnecting: ((Int) -> Void)?
 
-    func connect(host: String, port: UInt16 = 7420, passphrase: String) {
+    func connect(host: String, port: UInt16 = 7420) {
         lastHost = host
         lastPort = port
-        lastPassphrase = passphrase
+        lastEndpoint = nil
         shouldReconnect = true
         reconnectAttempts = 0
-        attemptConnection(host: host, port: port)
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)
+        attemptConnection(endpoint: endpoint)
     }
 
-    private func attemptConnection(host: String, port: UInt16) {
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)
+    func connect(endpoint: NWEndpoint) {
+        lastEndpoint = endpoint
+        lastHost = nil
+        shouldReconnect = true
+        reconnectAttempts = 0
+        attemptConnection(endpoint: endpoint)
+    }
 
-        // Try QUIC first, then TLS+TCP, then plain TCP
-        let params = createQUICParameters() ?? createTLSParameters() ?? NWParameters.tcp
+    private func attemptConnection(endpoint: NWEndpoint) {
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.noDelay = true
+        tcpOptions.connectionTimeout = 10
+
+        let params = NWParameters(tls: nil, tcp: tcpOptions)
         connection = NWConnection(to: endpoint, using: params)
 
         connection?.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                print("[Client] Connected to \(host):\(port)")
+                print("[Client] Connected")
                 self?.reconnectAttempts = 0
                 self?.startReceiving()
                 self?.authenticate()
             case .failed(let error):
                 print("[Client] Connection failed: \(error)")
                 self?.attemptReconnect(error: error.localizedDescription)
+            case .waiting(let error):
+                print("[Client] Waiting: \(error)")
             case .cancelled:
                 print("[Client] Disconnected")
             default:
@@ -57,66 +69,10 @@ final class StreamClient: @unchecked Sendable {
         connection?.start(queue: queue)
     }
 
-    /// Connect via Bonjour endpoint (mDNS discovery)
-    func connect(endpoint: NWEndpoint, passphrase: String) {
-        lastPassphrase = passphrase
-        shouldReconnect = true
-        reconnectAttempts = 0
-
-        let params = createQUICParameters() ?? createTLSParameters() ?? NWParameters.tcp
-        connection = NWConnection(to: endpoint, using: params)
-
-        connection?.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                print("[Client] Connected via Bonjour")
-                self?.reconnectAttempts = 0
-                self?.startReceiving()
-                self?.authenticate()
-            case .failed(let error):
-                print("[Client] Connection failed: \(error)")
-                self?.onDisconnected?(error.localizedDescription)
-            case .cancelled:
-                break
-            default:
-                break
-            }
-        }
-
-        connection?.start(queue: queue)
-    }
-
-    // MARK: - QUIC / TLS Parameters
-
-    private func createQUICParameters() -> NWParameters? {
-        let quicOptions = NWProtocolQUIC.Options(alpn: ["turboremote"])
-        let secOptions = quicOptions.securityProtocolOptions
-
-        // Accept any server certificate (we authenticate via passphrase)
-        sec_protocol_options_set_verify_block(secOptions, { _, _, completion in
-            completion(true)
-        }, queue)
-
-        return NWParameters(quic: quicOptions)
-    }
-
-    private func createTLSParameters() -> NWParameters? {
-        let tlsOptions = NWProtocolTLS.Options()
-        sec_protocol_options_set_verify_block(tlsOptions.securityProtocolOptions, { _, _, completion in
-            completion(true)
-        }, queue)
-
-        let tcpOptions = NWProtocolTCP.Options()
-        tcpOptions.noDelay = true
-
-        return NWParameters(tls: tlsOptions, tcp: tcpOptions)
-    }
-
-    // MARK: - Authentication
+    // MARK: - Authentication (uses app PIN automatically)
 
     private func authenticate() {
-        guard let passphrase = lastPassphrase else { return }
-        let hash = PassphraseManager.hash(passphrase)
+        let hash = PassphraseManager.hash(Secrets.appPin)
         let authData = ControlMessage.authData(passphraseHash: hash)
         connection?.send(content: authData, completion: .contentProcessed { error in
             if let error = error {
@@ -128,9 +84,7 @@ final class StreamClient: @unchecked Sendable {
     // MARK: - Reconnection
 
     private func attemptReconnect(error: String?) {
-        guard shouldReconnect,
-              reconnectAttempts < maxReconnectAttempts,
-              let host = lastHost else {
+        guard shouldReconnect, reconnectAttempts < maxReconnectAttempts else {
             onDisconnected?(error)
             return
         }
@@ -140,9 +94,20 @@ final class StreamClient: @unchecked Sendable {
         onReconnecting?(reconnectAttempts)
         print("[Client] Reconnecting in \(delay)s (attempt \(reconnectAttempts))")
 
+        // Clean up old connection
+        connection?.cancel()
+        connection = nil
+        receiveBuffer.removeAll()
+        authenticated = false
+
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self, self.shouldReconnect else { return }
-            self.attemptConnection(host: host, port: self.lastPort)
+            if let endpoint = self.lastEndpoint {
+                self.attemptConnection(endpoint: endpoint)
+            } else if let host = self.lastHost {
+                let ep = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: self.lastPort)!)
+                self.attemptConnection(endpoint: ep)
+            }
         }
     }
 
@@ -195,7 +160,6 @@ final class StreamClient: @unchecked Sendable {
             let packetData = receiveBuffer.subdata(in: 4..<4+packetSize)
             receiveBuffer.removeFirst(4 + packetSize)
 
-            // Check for auth result
             if !authenticated {
                 if let result = ControlMessage.parseAuthResult(from: packetData) {
                     authenticated = result
@@ -204,14 +168,13 @@ final class StreamClient: @unchecked Sendable {
                         onConnected?()
                     } else {
                         shouldReconnect = false
-                        onDisconnected?("Authentication failed — check passphrase")
+                        onDisconnected?("Authentication failed")
                         connection?.cancel()
                     }
                 }
                 continue
             }
 
-            // Regular frame packet
             if let packet = FramePacket.deserialize(from: packetData) {
                 onPacketReceived?(packet)
             }
