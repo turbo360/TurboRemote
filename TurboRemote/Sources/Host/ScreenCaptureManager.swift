@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import CoreMedia
 import AppKit
+import CoreGraphics
 
 @MainActor
 final class ScreenCaptureManager: NSObject, ObservableObject {
@@ -27,6 +28,18 @@ final class ScreenCaptureManager: NSObject, ObservableObject {
     }
 
     func startCapture(displayIndex: Int? = nil) async {
+        // Preflight: check and request Screen Recording permission
+        if !CGPreflightScreenCaptureAccess() {
+            print("[ScreenCapture] Permission not granted, requesting...")
+            let granted = CGRequestScreenCaptureAccess()
+            if !granted {
+                captureError = "Screen Recording permission not granted.\nOpen System Settings > Privacy & Security > Screen Recording, remove TurboRemote, re-add it, then click Retry."
+                print("[ScreenCapture] Permission denied by system")
+                return
+            }
+        }
+        print("[ScreenCapture] Permission preflight passed")
+
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             availableDisplays = content.displays
