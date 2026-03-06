@@ -279,6 +279,9 @@ final class HostManager: ObservableObject {
         profileSelector.reset()
         server.start()
         await captureManager.startCapture()
+        if let captureErr = captureManager.captureError {
+            errorMessage = "Screen capture failed: \(captureErr)\nGrant Screen Recording permission in System Settings > Privacy & Security"
+        }
         isStreaming = true
         framesSkipped = 0
         _bytesSent.pointee = 0
