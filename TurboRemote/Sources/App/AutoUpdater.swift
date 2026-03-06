@@ -149,34 +149,40 @@ final class AutoUpdater: ObservableObject {
     // MARK: - Install from DMG (silent mount, copy, unmount, relaunch)
 
     private func installFromDMG(_ dmgPath: URL) async throws {
-        // Mount DMG silently
+        // Use plist output for reliable mount point parsing
         let mount = Process()
         mount.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        mount.arguments = ["attach", dmgPath.path, "-nobrowse", "-quiet", "-mountrandom", "/tmp"]
+        mount.arguments = ["attach", dmgPath.path, "-nobrowse", "-noverify", "-noautoopen", "-plist"]
         let mountPipe = Pipe()
+        let errPipe = Pipe()
         mount.standardOutput = mountPipe
+        mount.standardError = errPipe
         try mount.run()
+
+        // Read output before waitUntilExit to avoid pipe deadlock
+        let outputData = mountPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         mount.waitUntilExit()
 
-        let mountOutput = String(data: mountPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard mount.terminationStatus == 0 else {
+            let errStr = String(data: errData, encoding: .utf8) ?? "unknown error"
+            errorMessage = "DMG mount failed: \(errStr)"
+            print("[AutoUpdater] hdiutil exit \(mount.terminationStatus): \(errStr)")
+            return
+        }
 
-        // Find mount point from hdiutil output (last column of last line)
-        guard let mountPoint = mountOutput
-            .components(separatedBy: .newlines)
-            .last(where: { !$0.isEmpty })?
-            .components(separatedBy: "\t")
-            .last?
-            .trimmingCharacters(in: .whitespaces),
-              !mountPoint.isEmpty else {
-            errorMessage = "Could not mount DMG"
+        // Parse plist output to find mount point
+        guard let plist = try? PropertyListSerialization.propertyList(from: outputData, format: nil) as? [String: Any],
+              let entities = plist["system-entities"] as? [[String: Any]],
+              let mountPoint = entities.first(where: { $0["mount-point"] != nil })?["mount-point"] as? String else {
+            errorMessage = "Could not find mount point in DMG output"
             return
         }
 
         defer {
-            // Unmount DMG
             let detach = Process()
             detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-            detach.arguments = ["detach", mountPoint, "-quiet", "-force"]
+            detach.arguments = ["detach", mountPoint, "-force"]
             try? detach.run()
             detach.waitUntilExit()
         }
