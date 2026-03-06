@@ -133,47 +133,121 @@ final class AutoUpdater: ObservableObject {
 
             downloadProgress = 1.0
 
-            // Open the downloaded file
             if assetName.hasSuffix(".dmg") {
-                // Mount the DMG
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                process.arguments = [destPath.path]
-                try process.run()
-                process.waitUntilExit()
+                try await installFromDMG(destPath)
             } else if assetName.hasSuffix(".zip") {
-                // Unzip and open
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-                process.arguments = ["-o", destPath.path, "-d", tempDir.path]
-                try process.run()
-                process.waitUntilExit()
-
-                // Look for .app in extracted contents
-                let contents = try FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
-                if let app = contents.first(where: { $0.pathExtension == "app" }) {
-                    // Move to Applications
-                    let appDest = URL(fileURLWithPath: "/Applications/\(app.lastPathComponent)")
-                    try? FileManager.default.removeItem(at: appDest)
-                    try FileManager.default.moveItem(at: app, to: appDest)
-
-                    // Relaunch
-                    let relaunch = Process()
-                    relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                    relaunch.arguments = ["-n", appDest.path]
-                    try relaunch.run()
-
-                    // Quit current app
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                        NSApplication.shared.terminate(nil)
-                    }
-                }
+                try await installFromZip(destPath, tempDir: tempDir)
             }
 
             isDownloading = false
         } catch {
             errorMessage = "Download failed: \(error.localizedDescription)"
             isDownloading = false
+        }
+    }
+
+    // MARK: - Install from DMG (silent mount, copy, unmount, relaunch)
+
+    private func installFromDMG(_ dmgPath: URL) async throws {
+        // Mount DMG silently
+        let mount = Process()
+        mount.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        mount.arguments = ["attach", dmgPath.path, "-nobrowse", "-quiet", "-mountrandom", "/tmp"]
+        let mountPipe = Pipe()
+        mount.standardOutput = mountPipe
+        try mount.run()
+        mount.waitUntilExit()
+
+        let mountOutput = String(data: mountPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        // Find mount point from hdiutil output (last column of last line)
+        guard let mountPoint = mountOutput
+            .components(separatedBy: .newlines)
+            .last(where: { !$0.isEmpty })?
+            .components(separatedBy: "\t")
+            .last?
+            .trimmingCharacters(in: .whitespaces),
+              !mountPoint.isEmpty else {
+            errorMessage = "Could not mount DMG"
+            return
+        }
+
+        defer {
+            // Unmount DMG
+            let detach = Process()
+            detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            detach.arguments = ["detach", mountPoint, "-quiet", "-force"]
+            try? detach.run()
+            detach.waitUntilExit()
+        }
+
+        // Find .app in mounted volume
+        let mountURL = URL(fileURLWithPath: mountPoint)
+        let contents = try FileManager.default.contentsOfDirectory(at: mountURL, includingPropertiesForKeys: nil)
+        guard let appBundle = contents.first(where: { $0.pathExtension == "app" }) else {
+            errorMessage = "No .app found in DMG"
+            return
+        }
+
+        replaceAndRelaunch(newApp: appBundle)
+    }
+
+    // MARK: - Install from ZIP
+
+    private func installFromZip(_ zipPath: URL, tempDir: URL) async throws {
+        let extractDir = tempDir.appendingPathComponent("TurboRemote_update")
+        try? FileManager.default.removeItem(at: extractDir)
+        try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        unzip.arguments = ["-o", zipPath.path, "-d", extractDir.path]
+        try unzip.run()
+        unzip.waitUntilExit()
+
+        let contents = try FileManager.default.contentsOfDirectory(at: extractDir, includingPropertiesForKeys: nil)
+        guard let appBundle = contents.first(where: { $0.pathExtension == "app" }) else {
+            errorMessage = "No .app found in ZIP"
+            return
+        }
+
+        replaceAndRelaunch(newApp: appBundle)
+    }
+
+    // MARK: - Replace current app and relaunch
+
+    private func replaceAndRelaunch(newApp: URL) {
+        // Determine where the current app lives
+        let currentAppPath = Bundle.main.bundlePath
+        let currentAppURL = URL(fileURLWithPath: currentAppPath)
+        let appName = currentAppURL.lastPathComponent
+        let parentDir = currentAppURL.deletingLastPathComponent()
+
+        // Destination is same location as current app
+        let destURL = parentDir.appendingPathComponent(appName)
+
+        // Use a shell script to: wait for us to quit → replace app → relaunch
+        let script = """
+        #!/bin/bash
+        sleep 1
+        rm -rf "\(destURL.path)"
+        cp -R "\(newApp.path)" "\(destURL.path)"
+        open "\(destURL.path)"
+        rm -f /tmp/turboremote_update.sh
+        """
+
+        let scriptPath = "/tmp/turboremote_update.sh"
+        try? script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/bin/bash")
+        launcher.arguments = [scriptPath]
+        try? launcher.run()
+
+        // Quit current app
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NSApplication.shared.terminate(nil)
         }
     }
 
@@ -219,7 +293,7 @@ struct MandatoryUpdateView: View {
                 .padding(.horizontal)
             }
 
-            Text("This update is mandatory. Please install it to continue using Turbo Remote.")
+            Text("This update is mandatory and will install automatically.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -229,11 +303,11 @@ struct MandatoryUpdateView: View {
                 VStack(spacing: 8) {
                     ProgressView(value: updater.downloadProgress)
                         .frame(width: 200)
-                    Text("Downloading...")
+                    Text(updater.downloadProgress < 1.0 ? "Downloading..." : "Installing...")
                         .font(.caption)
                 }
             } else {
-                Button("Install Update") {
+                Button("Update Now") {
                     Task { await updater.downloadAndInstall() }
                 }
                 .buttonStyle(.borderedProminent)
