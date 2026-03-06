@@ -195,7 +195,12 @@ final class AutoUpdater: ObservableObject {
             return
         }
 
-        replaceAndRelaunch(newApp: appBundle)
+        // Copy app to temp BEFORE the defer unmounts the DMG
+        let tempApp = FileManager.default.temporaryDirectory.appendingPathComponent(appBundle.lastPathComponent)
+        try? FileManager.default.removeItem(at: tempApp)
+        try FileManager.default.copyItem(at: appBundle, to: tempApp)
+
+        replaceAndRelaunch(newApp: tempApp)
     }
 
     // MARK: - Install from ZIP
